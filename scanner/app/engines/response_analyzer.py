@@ -106,14 +106,58 @@ class ResponseAnalyzer:
             vulnerabilities.append(timing_vuln)
         
         # Auth bypass detection
+        mutation_type = mutation_type or ''
+
         if 'auth' in mutation_type.lower():
             auth_vuln = self._check_auth_bypass(
                 endpoint, method, baseline, mutated
             )
             if auth_vuln:
                 vulnerabilities.append(auth_vuln)
+
+        token_reuse_vuln = self._check_token_reuse_risk(
+            endpoint, method, baseline, mutated, mutation_type
+        )
+        if token_reuse_vuln:
+            vulnerabilities.append(token_reuse_vuln)
         
         return vulnerabilities
+
+    def analyze_rate_limit(
+        self,
+        endpoint: str,
+        method: str,
+        baseline: Dict[str, Any],
+        burst_responses: List[Dict[str, Any]],
+        burst_count: int
+    ) -> Optional[Dict[str, Any]]:
+        """Analyze burst traffic behavior for explicit throttling/rate-limit weaknesses."""
+        if not burst_responses:
+            return None
+
+        statuses = [resp.get('status_code', 0) for resp in burst_responses]
+        success_count = sum(1 for code in statuses if 200 <= code < 300)
+        throttled_count = sum(1 for code in statuses if code in (429, 503))
+        error_count = sum(1 for code in statuses if code >= 500)
+
+        if burst_count >= 10 and throttled_count == 0 and success_count >= int(burst_count * 0.9):
+            return {
+                'endpoint': endpoint,
+                'method': method,
+                'vulnerability': 'Potential Missing Rate Limiting',
+                'severity': 'medium',
+                'details': {
+                    'mutation_type': 'rate_limit_burst',
+                    'burst_count': burst_count,
+                    'success_count': success_count,
+                    'throttled_count': throttled_count,
+                    'error_count': error_count,
+                    'status_distribution': statuses,
+                },
+                'evidence': f'Burst of {burst_count} requests did not trigger throttling (no 429/503 observed).',
+            }
+
+        return None
     
     def _check_status_code_change(
         self,
@@ -357,4 +401,55 @@ class ResponseAnalyzer:
                 'evidence': 'Request succeeded without authentication',
             }
         
+        return None
+
+    def _check_token_reuse_risk(
+        self,
+        endpoint: str,
+        method: str,
+        baseline: Dict[str, Any],
+        mutated: Dict[str, Any],
+        mutation_type: str
+    ) -> Optional[Dict[str, Any]]:
+        if mutation_type not in ('auth_token_reuse', 'auth_token_reuse_id_increment'):
+            return None
+
+        baseline_status = baseline.get('status_code', 0)
+        mutated_status = mutated.get('status_code', 0)
+        baseline_size = baseline.get('content_length', 0)
+        mutated_size = mutated.get('content_length', 0)
+
+        # Reused token with shifted object ID still succeeding may indicate weak object-level auth.
+        if mutation_type == 'auth_token_reuse_id_increment' and baseline_status in (200, 201) and mutated_status in (200, 201):
+            size_ratio = (mutated_size / baseline_size) if baseline_size else 1
+            return {
+                'endpoint': endpoint,
+                'method': method,
+                'vulnerability': 'Potential IDOR/BOLA via Token Reuse',
+                'severity': 'high',
+                'details': {
+                    'mutation_type': mutation_type,
+                    'baseline_status': baseline_status,
+                    'mutated_status': mutated_status,
+                    'baseline_size': baseline_size,
+                    'mutated_size': mutated_size,
+                    'size_ratio': round(size_ratio, 2),
+                },
+                'evidence': 'Reused token with modified object identifier still returned successful response.',
+            }
+
+        if mutation_type == 'auth_token_reuse' and baseline_status in (200, 201) and mutated_status in (200, 201):
+            return {
+                'endpoint': endpoint,
+                'method': method,
+                'vulnerability': 'Token Replay May Be Accepted',
+                'severity': 'medium',
+                'details': {
+                    'mutation_type': mutation_type,
+                    'baseline_status': baseline_status,
+                    'mutated_status': mutated_status,
+                },
+                'evidence': 'Replay-style request with same bearer token remained successful.',
+            }
+
         return None

@@ -1,6 +1,7 @@
 const axios = require('axios');
 const scansRepo = require('../db/repositories/scansRepo');
 const resultsRepo = require('../db/repositories/resultsRepo');
+const { enrichFindings } = require('./aiRiskService');
 
 const PYTHON_SCANNER_URL = process.env.PYTHON_SCANNER_URL || 'http://localhost:8000';
 
@@ -36,7 +37,8 @@ async function sendScanToPython(scanId, requests, userId) {
     console.log(`Scan ${scanId} submitted to Python scanner`);
 
     // Persist findings returned by scanner service.
-    const findings = response?.data?.results || [];
+    const rawFindings = response?.data?.results || [];
+    const findings = await enrichFindings(rawFindings);
     await storeScanResults(scanId, findings);
 
     return response.data;

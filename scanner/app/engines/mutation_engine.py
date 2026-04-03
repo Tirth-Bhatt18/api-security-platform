@@ -1,7 +1,11 @@
 import logging
 import json
+import re
+import copy
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
+from app.engines.request_modeler import RequestModeler
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +72,7 @@ class MutationEngine:
         """
         Generate all mutation variants of a request
         """
+        model = self.modeler.build_model(request)
         mutations = []
         
         # Auth testing - remove authorization header
@@ -75,6 +80,13 @@ class MutationEngine:
         
         # Auth testing - invalid token
         mutations.append(self._mutate_invalid_token(request))
+
+        # Auth testing - explicit token reuse/replay scenario
+        mutations.append(self._mutate_token_reuse(request))
+        mutations.append(self._mutate_token_reuse_with_id_shift(request))
+
+        # Recursive, per-field type-aware mutations from structured model.
+        mutations.extend(self._mutate_modeled_fields(request, model))
         
         # Parameter mutations
         if request.body:
@@ -92,6 +104,15 @@ class MutationEngine:
             mutations.extend(self._mutate_injections(request))
         
         return [m for m in mutations if m is not None]
+
+    def __init__(self):
+        self.modeler = RequestModeler()
+
+    def _find_auth_header_key(self, headers: Dict[str, Any]) -> Optional[str]:
+        for key in headers.keys():
+            if key.lower() == 'authorization':
+                return key
+        return None
     
     def _mutate_auth_removal(self, request) -> Dict[str, Any]:
         """Remove or modify authorization header"""
@@ -120,10 +141,130 @@ class MutationEngine:
             'body': request.body,
         }
         
-        if 'authorization' in mutation['headers']:
-            mutation['headers']['authorization'] = 'Bearer invalid_token_12345'
+        auth_key = self._find_auth_header_key(mutation['headers'])
+        if auth_key:
+            mutation['headers'][auth_key] = 'Bearer invalid_token_12345'
         
         return mutation
+
+    def _mutate_token_reuse(self, request) -> Optional[Dict[str, Any]]:
+        """Replay/reuse the same token with a nonce-like marker to detect weak replay controls."""
+        mutation = {
+            'type': 'auth_token_reuse',
+            'method': request.method,
+            'url': request.url,
+            'headers': request.headers.copy() if request.headers else {},
+            'body': request.body,
+        }
+
+        auth_key = self._find_auth_header_key(mutation['headers'])
+        if not auth_key:
+            return None
+
+        mutation['headers']['X-Replay-Attempt'] = '1'
+        return mutation
+
+    def _mutate_token_reuse_with_id_shift(self, request) -> Optional[Dict[str, Any]]:
+        """Reuse same token but shift first numeric ID in URL path/query to probe IDOR/BOLA scenarios."""
+        headers = request.headers.copy() if request.headers else {}
+        auth_key = self._find_auth_header_key(headers)
+        if not auth_key:
+            return None
+
+        url = request.url
+        match = re.search(r"(\d+)", url)
+        if not match:
+            return None
+
+        old_id = match.group(1)
+        new_id = str(int(old_id) + 1)
+        shifted_url = url[:match.start()] + new_id + url[match.end():]
+
+        return {
+            'type': 'auth_token_reuse_id_increment',
+            'method': request.method,
+            'url': shifted_url,
+            'headers': headers,
+            'body': request.body,
+        }
+
+    def _payloads_for_type(self, field_type: str, original_value: Any) -> List[Any]:
+        if field_type in ('integer', 'number'):
+            return [-1, 0, 1_000_000_000]
+        if field_type == 'boolean':
+            return [not bool(original_value), None]
+        if field_type == 'array':
+            return [[], ["A" * 256]]
+        if field_type == 'string':
+            return [
+                '',
+                'A' * 4096,
+                "' OR '1'='1",
+                '<script>alert(1)</script>',
+            ]
+        # unknown/null/object
+        return [None]
+
+    def _mutate_modeled_fields(self, request, model: Dict[str, Any]) -> List[Dict[str, Any]]:
+        mutations: List[Dict[str, Any]] = []
+        fields = model.get('fields', [])
+
+        # Guard against combinatorial explosion.
+        for field in fields[:20]:
+            payloads = self._payloads_for_type(field.get('type', 'unknown'), field.get('value'))
+            for payload in payloads[:4]:
+                mutation = {
+                    'type': f"field_mutation_{field.get('location')}_{field.get('type')}",
+                    'method': request.method,
+                    'url': request.url,
+                    'headers': copy.deepcopy(request.headers) if request.headers else {},
+                    'body': copy.deepcopy(request.body),
+                }
+
+                if field.get('location') == 'body' and isinstance(mutation['body'], dict):
+                    self._set_nested_value(mutation['body'], field.get('path', []), payload)
+                    mutations.append(mutation)
+                elif field.get('location') == 'query':
+                    mutation['url'] = self._set_query_value(
+                        mutation['url'],
+                        str(field.get('path', [''])[0]),
+                        payload,
+                    )
+                    mutations.append(mutation)
+
+        return mutations
+
+    def _set_nested_value(self, root: Any, path: List[Any], value: Any):
+        if not path:
+            return
+
+        current = root
+        for token in path[:-1]:
+            if isinstance(token, int):
+                if isinstance(current, list) and 0 <= token < len(current):
+                    current = current[token]
+                else:
+                    return
+            else:
+                if isinstance(current, dict) and token in current:
+                    current = current[token]
+                else:
+                    return
+
+        last = path[-1]
+        if isinstance(last, int):
+            if isinstance(current, list) and 0 <= last < len(current):
+                current[last] = value
+        else:
+            if isinstance(current, dict):
+                current[last] = value
+
+    def _set_query_value(self, url: str, key: str, value: Any) -> str:
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        params[key] = [str(value) if value is not None else '']
+        new_query = urlencode(params, doseq=True)
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
     
     def _mutate_parameters(self, request) -> List[Dict[str, Any]]:
         """Mutate request body parameters"""
