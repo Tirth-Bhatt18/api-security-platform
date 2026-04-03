@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -63,7 +64,7 @@ async def health_check():
     return {
         "status": "ok",
         "service": "API Security Scanner",
-        "timestamp": os.popen("date -u +%Y-%m-%dT%H:%M:%SZ").read().strip()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 

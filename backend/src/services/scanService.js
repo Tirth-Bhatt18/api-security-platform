@@ -1,5 +1,6 @@
 const axios = require('axios');
-const db = require('../db/connection');
+const scansRepo = require('../db/repositories/scansRepo');
+const resultsRepo = require('../db/repositories/resultsRepo');
 
 const PYTHON_SCANNER_URL = process.env.PYTHON_SCANNER_URL || 'http://localhost:8000';
 
@@ -9,10 +10,7 @@ const PYTHON_SCANNER_URL = process.env.PYTHON_SCANNER_URL || 'http://localhost:8
 async function sendScanToPython(scanId, requests, userId) {
   try {
     // Update scan status to running
-    await db.query(
-      'UPDATE scans SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      ['running', scanId]
-    );
+    await scansRepo.updateScanStatus(scanId, 'running');
 
     const payload = {
       scan_id: scanId,
@@ -37,15 +35,16 @@ async function sendScanToPython(scanId, requests, userId) {
 
     console.log(`Scan ${scanId} submitted to Python scanner`);
 
+    // Persist findings returned by scanner service.
+    const findings = response?.data?.results || [];
+    await storeScanResults(scanId, findings);
+
     return response.data;
   } catch (err) {
     console.error(`Error sending scan ${scanId} to Python scanner:`, err.message);
 
     // Update scan status to failed
-    await db.query(
-      'UPDATE scans SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      ['failed', scanId]
-    );
+    await scansRepo.updateScanStatus(scanId, 'failed');
 
     throw err;
   }
@@ -58,43 +57,33 @@ async function sendScanToPython(scanId, requests, userId) {
 async function storeScanResults(scanId, results = []) {
   try {
     // Verify scan exists
-    const scan = await db.queryOne('SELECT id FROM scans WHERE id = $1', [scanId]);
+    const scan = await scansRepo.getScanById(scanId);
     if (!scan) {
       throw new Error(`Scan ${scanId} not found`);
     }
 
     // Store results
     for (const result of results) {
-      await db.query(
-        `INSERT INTO results (scan_id, endpoint, method, vulnerability, severity, details, evidence)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [
-          scanId,
-          result.endpoint,
-          result.method || 'UNKNOWN',
-          result.vulnerability,
-          result.severity,
-          JSON.stringify(result.details || {}),
-          result.evidence || null,
-        ]
+      await resultsRepo.createResult(
+        scanId,
+        result.endpoint,
+        result.method || 'UNKNOWN',
+        result.vulnerability,
+        result.severity,
+        result.details || {},
+        result.evidence || null
       );
     }
 
     // Update scan status to completed
-    await db.query(
-      'UPDATE scans SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      ['completed', scanId]
-    );
+    await scansRepo.updateScanStatus(scanId, 'completed');
 
     console.log(`Stored ${results.length} results for scan ${scanId}`);
   } catch (err) {
     console.error(`Error storing results for scan ${scanId}:`, err);
 
     // Update scan status to failed
-    await db.query(
-      'UPDATE scans SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      ['failed', scanId]
-    );
+    await scansRepo.updateScanStatus(scanId, 'failed');
 
     throw err;
   }

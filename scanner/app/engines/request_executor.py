@@ -1,6 +1,8 @@
 import logging
 import httpx
 import asyncio
+import os
+import socket
 from typing import Dict, Any, Optional
 from urllib.parse import urlparse
 import ipaddress
@@ -15,6 +17,16 @@ class RequestExecutor:
         self.timeout = timeout
         self.max_retries = max_retries
         self.client = None
+        self.blocked_hosts = {
+            host.strip().lower()
+            for host in os.getenv('BLOCKED_HOSTS', 'localhost,127.0.0.1,0.0.0.0').split(',')
+            if host.strip()
+        }
+        self.blocked_ports = {
+            int(port.strip())
+            for port in os.getenv('BLOCKED_PORTS', '22,23,25,3306,5432,6379,11211').split(',')
+            if port.strip().isdigit()
+        }
     
     async def _get_client(self):
         """Get or create async HTTP client"""
@@ -22,6 +34,9 @@ class RequestExecutor:
             self.client = httpx.AsyncClient(timeout=self.timeout)
         return self.client
     
+    def _is_private_or_local_ip(self, ip: ipaddress._BaseAddress) -> bool:
+        return ip.is_loopback or ip.is_private or ip.is_link_local
+
     def _is_blocked_url(self, url: str) -> tuple[bool, str]:
         """
         Check if URL is blocked (SSRF protection)
@@ -30,9 +45,19 @@ class RequestExecutor:
         try:
             parsed = urlparse(url)
             hostname = parsed.hostname
+            port = parsed.port
             
             if not hostname:
                 return True, "Invalid URL: no hostname"
+
+            if parsed.scheme not in ('http', 'https'):
+                return True, f"Blocked scheme: {parsed.scheme}"
+
+            if port and port in self.blocked_ports:
+                return True, f"Blocked port: {port}"
+
+            if hostname.lower() in self.blocked_hosts:
+                return True, f"Blocked host: {hostname}"
             
             # Block localhost
             if hostname in ['localhost', 'localhost.localdomain']:
@@ -43,20 +68,19 @@ class RequestExecutor:
                 ip = ipaddress.ip_address(hostname)
                 
                 # Block localhost IP
-                if ip.is_loopback:
-                    return True, f"Blocked: localhost IP {ip}"
-                
-                # Block private networks
-                if ip.is_private:
-                    return True, f"Blocked: private IP {ip}"
-                
-                # Block link-local
-                if ip.is_link_local:
-                    return True, f"Blocked: link-local IP {ip}"
+                if self._is_private_or_local_ip(ip):
+                    return True, f"Blocked IP: {ip}"
             
             except ValueError:
-                # Not an IP address, continue with hostname check
-                pass
+                # Hostname path: resolve DNS and block if any target is private/local.
+                try:
+                    addr_infos = socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == 'https' else 80))
+                    for info in addr_infos:
+                        resolved_ip = ipaddress.ip_address(info[4][0])
+                        if self._is_private_or_local_ip(resolved_ip):
+                            return True, f"Blocked DNS resolution to private/local IP: {resolved_ip}"
+                except Exception as dns_err:
+                    return True, f"DNS validation failed: {dns_err}"
             
             return False, "OK"
         

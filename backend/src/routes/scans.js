@@ -4,7 +4,8 @@ const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
 
-const db = require('../db/connection');
+const scansRepo = require('../db/repositories/scansRepo');
+const resultsRepo = require('../db/repositories/resultsRepo');
 const authMiddleware = require('../middleware/auth');
 const postmanParser = require('../services/postmanParser');
 const scanService = require('../services/scanService');
@@ -82,13 +83,19 @@ router.post('/', authMiddleware, upload.single('file'), async (req, res) => {
       });
     }
 
-    // Create scan record
-    const scanResult = await db.query(
-      'INSERT INTO scans (user_id, status, collection_name, endpoints_count) VALUES ($1, $2, $3, $4) RETURNING id, status, created_at',
-      [req.user.id, 'pending', collection.info.name, requests.length]
-    );
+    // Enforce concurrent scan cap per user
+    const maxConcurrentScans = parseInt(process.env.MAX_CONCURRENT_SCANS || 5);
+    const activeScanCount = await scansRepo.getActiveScanCountByUser(req.user.id);
 
-    const scan = scanResult.rows[0];
+    if (activeScanCount >= maxConcurrentScans) {
+      fs.unlinkSync(filePath);
+      return res.status(429).json({
+        error: `Maximum concurrent scans reached (${maxConcurrentScans})`,
+      });
+    }
+
+    // Create scan record
+    const scan = await scansRepo.createScan(req.user.id, collection.info.name, requests.length);
     const scanId = scan.id;
 
     // Clean up uploaded file
@@ -98,7 +105,7 @@ router.post('/', authMiddleware, upload.single('file'), async (req, res) => {
     scanService.sendScanToPython(scanId, requests, req.user.id).catch(err => {
       console.error(`Error sending scan ${scanId} to Python:`, err);
       // Update scan status to failed
-      db.query('UPDATE scans SET status = $1 WHERE id = $2', ['failed', scanId]).catch(console.error);
+      scansRepo.updateScanStatus(scanId, 'failed').catch(console.error);
     });
 
     res.status(202).json({
@@ -112,7 +119,13 @@ router.post('/', authMiddleware, upload.single('file'), async (req, res) => {
     });
   } catch (err) {
     if (req.file) {
-      fs.unlinkSync(req.file.path).catch(console.error);
+      try {
+        if (fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
+      } catch (cleanupErr) {
+        console.error('Failed to cleanup uploaded file:', cleanupErr);
+      }
     }
     console.error('Scan creation error:', err);
     res.status(500).json({ error: 'Failed to create scan' });
@@ -125,10 +138,7 @@ router.post('/', authMiddleware, upload.single('file'), async (req, res) => {
  */
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const scans = await db.queryAll(
-      'SELECT id, status, collection_name, endpoints_count, created_at, updated_at FROM scans WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100',
-      [req.user.id]
-    );
+    const scans = await scansRepo.getScansByUser(req.user.id);
 
     res.json({ scans });
   } catch (err) {
@@ -146,25 +156,19 @@ router.get('/:scanId', authMiddleware, async (req, res) => {
     const { scanId } = req.params;
 
     // Verify scan belongs to user
-    const scan = await db.queryOne(
-      'SELECT id, user_id, status, collection_name, endpoints_count, created_at, updated_at FROM scans WHERE id = $1',
-      [scanId]
-    );
+    const scan = await scansRepo.getScanById(scanId);
 
     if (!scan || scan.user_id !== req.user.id) {
       return res.status(404).json({ error: 'Scan not found' });
     }
 
     // Get vulnerability count
-    const vulnCount = await db.queryOne(
-      'SELECT COUNT(*) as count FROM results WHERE scan_id = $1',
-      [scanId]
-    );
+    const vulnCount = await resultsRepo.getResultCountByScan(scanId);
 
     res.json({
       scan: {
         ...scan,
-        vulnerability_count: parseInt(vulnCount.count),
+        vulnerability_count: vulnCount,
       },
     });
   } catch (err) {

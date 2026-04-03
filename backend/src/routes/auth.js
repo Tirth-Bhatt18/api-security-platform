@@ -1,7 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const db = require('../db/connection');
+const usersRepo = require('../db/repositories/usersRepo');
 
 const router = express.Router();
 
@@ -22,7 +22,7 @@ router.post('/register', async (req, res) => {
     }
 
     // Check if email already exists
-    const existingUser = await db.queryOne('SELECT id FROM users WHERE email = $1', [email]);
+    const existingUser = await usersRepo.getUserByEmail(email);
     if (existingUser) {
       return res.status(409).json({ error: 'Email already registered' });
     }
@@ -31,12 +31,7 @@ router.post('/register', async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 10);
 
     // Insert user
-    const result = await db.query(
-      'INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at',
-      [email, passwordHash]
-    );
-
-    const user = result.rows[0];
+    const user = await usersRepo.createUser(email, passwordHash);
     res.status(201).json({
       message: 'User registered successfully',
       user: {
@@ -64,7 +59,7 @@ router.post('/login', async (req, res) => {
     }
 
     // Find user
-    const user = await db.queryOne('SELECT id, email, password_hash FROM users WHERE email = $1', [email]);
+    const user = await usersRepo.getUserByEmail(email);
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }

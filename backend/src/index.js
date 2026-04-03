@@ -30,6 +30,7 @@ db.initTables().catch(err => {
 // Routes
 app.use('/auth', authRoutes);
 app.use('/scans', scanRoutes);
+app.use('/scan', scanRoutes); // Compatibility alias for POST /scan
 app.use('/results', resultsRoutes);
 
 // Health check

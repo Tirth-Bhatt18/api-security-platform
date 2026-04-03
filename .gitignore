@@ -1,16 +1,19 @@
 # Node modules
 backend/node_modules/
+frontend/node_modules/
 scanner/venv/
 scanner/.venv/
 
 # Environment files (don't commit secrets!)
 backend/.env
 scanner/.env
+frontend/.env
 .env
 
 # Build artifacts
 backend/dist/
 backend/build/
+frontend/dist/
 scanner/__pycache__/
 scanner/*.egg-info/
 
