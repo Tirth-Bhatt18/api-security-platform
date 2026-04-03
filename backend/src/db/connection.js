@@ -52,14 +52,27 @@ async function initTables() {
       );
     `);
 
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_scans_user_id ON scans(user_id);
-      CREATE INDEX IF NOT EXISTS idx_results_scan_id ON results(scan_id);
-      CREATE INDEX IF NOT EXISTS idx_scans_status ON scans(status);
-    `);
+    try {
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_scans_user_id ON scans(user_id);
+        CREATE INDEX IF NOT EXISTS idx_results_scan_id ON results(scan_id);
+        CREATE INDEX IF NOT EXISTS idx_scans_status ON scans(status);
+      `);
+    } catch (indexErr) {
+      if (indexErr?.code === '42501') {
+        console.warn('Skipping index initialization due to ownership/permission limits.');
+        console.warn('Run db/01_init.sql and db/02_schema.sql as superuser to align ownership and indexes.');
+      } else {
+        throw indexErr;
+      }
+    }
 
     console.log('Database tables initialized successfully');
   } catch (err) {
+    if (err?.code === '42501') {
+      console.error('Error initializing database tables: insufficient privileges or ownership for DB_USER.');
+      console.error('Run db/01_init.sql as a PostgreSQL superuser, then rerun backend.');
+    }
     console.error('Error initializing database tables:', err);
     throw err;
   }
