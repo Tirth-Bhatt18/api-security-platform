@@ -1,0 +1,55 @@
+# Node modules
+backend/node_modules/
+scanner/venv/
+scanner/.venv/
+
+# Environment files (don't commit secrets!)
+backend/.env
+scanner/.env
+.env
+
+# Build artifacts
+backend/dist/
+backend/build/
+scanner/__pycache__/
+scanner/*.egg-info/
+
+# Uploaded files
+backend/uploads/
+*.json.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Database
+*.db
+*.sqlite
+database.sql
+
+# Docker
+.dockerfile
+docker-compose.override.yml
+
+# Testing
+coverage/
+.pytest_cache/
+.nyc_output/
+
+# Package managers
+package-lock.json
+yarn.lock
+poetry.lock
