@@ -191,6 +191,25 @@ Raw SQL reference file:
 - Concurrent scan caps enforced.
 - Scanner includes SSRF checks for localhost/private networks and DNS resolution safety.
 
+## Troubleshooting
+
+### permission denied for schema public
+
+If backend startup fails with `permission denied for schema public`, your `DB_USER` can connect but cannot create tables.
+
+Fix options:
+
+1. Run `db/01_init.sql` as PostgreSQL superuser.
+2. Or run these SQL statements as superuser in database `api_security_platform`:
+
+```sql
+GRANT USAGE, CREATE ON SCHEMA public TO api_user;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO api_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO api_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO api_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO api_user;
+```
+
 ## About crAPI Setup
 
 You asked for non-Docker setup for crAPI. For OWASP crAPI specifically, the supported and practical local setup is container-based (Docker Compose) or VM-based deployment from their docs.
