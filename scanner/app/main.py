@@ -26,6 +26,8 @@ executor = RequestExecutor()
 mutation_engine = MutationEngine()
 analyzer = ResponseAnalyzer()
 
+RATE_LIMIT_BURST_COUNT = int(os.getenv('RATE_LIMIT_BURST_COUNT', '12'))
+
 
 class NormalizedRequest(BaseModel):
     method: str
@@ -123,6 +125,34 @@ async def scan(request: ScanRequest):
                     except Exception as e:
                         logger.warning(f"Error testing mutation for {req.url}: {str(e)}")
                         continue
+
+                # Dedicated rate-limit burst phase
+                burst_tasks = [
+                    executor.execute_request(
+                        method=req.method,
+                        url=req.url,
+                        headers=req.headers,
+                        body=req.body,
+                    )
+                    for _ in range(RATE_LIMIT_BURST_COUNT)
+                ]
+                burst_responses = await asyncio.gather(*burst_tasks, return_exceptions=True)
+                normalized_burst = []
+                for resp in burst_responses:
+                    if isinstance(resp, Exception):
+                        normalized_burst.append({'status_code': 0, 'error': str(resp)})
+                    else:
+                        normalized_burst.append(resp)
+
+                rate_limit_vuln = analyzer.analyze_rate_limit(
+                    endpoint=req.url,
+                    method=req.method,
+                    baseline=baseline_response,
+                    burst_responses=normalized_burst,
+                    burst_count=RATE_LIMIT_BURST_COUNT,
+                )
+                if rate_limit_vuln:
+                    all_results.append(rate_limit_vuln)
             
             except Exception as e:
                 logger.error(f"Error processing request {req.method} {req.url}: {str(e)}")
