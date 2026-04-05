@@ -14,7 +14,16 @@ Production-ready API security testing platform with:
 - Database: PostgreSQL
 - Frontend: React + Vite + Axios + React Router
 
-Prisma/ORM is intentionally removed. The backend uses regular parameterized SQL queries and repository modules.
+## High-Level Architecture
+
+1. User authenticates in the React frontend.
+2. Frontend sends JWT-authenticated requests to the Node backend.
+3. User uploads a Postman collection JSON (`POST /scan` or `POST /scans`).
+4. Backend validates and parses the collection into normalized requests.
+5. Backend creates a scan record (`pending` -> `running`) and sends the job to the Python scanner.
+6. Scanner runs baseline + mutation tests, analyzes responses, and returns findings.
+7. Backend enriches findings (Gemini if enabled, heuristic fallback otherwise), stores results, and sets scan to `completed` (or `failed` on error).
+8. Frontend dashboard and scan details pages query scans/results and render status, metrics, and findings.
 
 ## Folder Structure
 
@@ -43,15 +52,7 @@ api-security-platform/
    `- 03_reset.sql
 ```
 
-## Environment Files
-
-Already provided:
-
-- `backend/.env`
-- `scanner/.env`
-- `frontend/.env`
-
-Templates:
+## Environment Files' Templates:
 
 - `backend/.env.example`
 - `scanner/.env.example`
@@ -59,9 +60,7 @@ Templates:
 
 ## Database Setup
 
-Use PostgreSQL and run scripts in order.
-
-### Option A: Run script files
+Use PostgreSQL and run scripts in order:
 
 1. Run `db/01_init.sql` as a PostgreSQL superuser.
 2. Connect to `api_security_platform` database.
@@ -70,14 +69,6 @@ Use PostgreSQL and run scripts in order.
 Optional reset:
 
 - Run `db/03_reset.sql`.
-
-### Option B: Manual commands
-
-```sql
-CREATE DATABASE api_security_platform;
-CREATE USER api_user WITH PASSWORD 'secure_password';
-GRANT ALL PRIVILEGES ON DATABASE api_security_platform TO api_user;
-```
 
 ## Install Dependencies
 
@@ -170,7 +161,7 @@ Runs on `http://localhost:5173`.
 - `/scan/new`
 - `/scans/:scanId`
 
-## SQL Query Layer (No ORM)
+## SQL Query Layer
 
 The backend query layer is modular and uses parameterized SQL.
 
@@ -184,9 +175,37 @@ Raw SQL reference file:
 
 - `backend/src/db/raw-queries.sql`
 
+## Scan Engine Details
+
+Scanner mutations and analysis include:
+
+- Auth mutation tests (header removal, invalid token, token reuse, ID shift replay)
+- Parameter/body fuzzing (null, empty, large payloads, wrong types)
+- Query and URL mutation checks
+- Injection payload tests (SQL, NoSQL, command, XSS)
+- Header-based mutation checks (CORS/security-header scenarios)
+- Rate-limit burst phase analysis
+- Response anomaly analysis (status shifts, size/timing anomalies, reflected payload signals)
+
+## Data Model Summary
+
+Core tables:
+
+- `users`
+- `scans` (`pending`, `running`, `completed`, `failed`)
+- `results` (`critical`, `high`, `medium`, `low`)
+
+Indexes are created for common query paths (user, scan, status, severity).
+
 ## Security Notes
 
 - JWT required for protected endpoints.
 - Upload limits enforced on file size and endpoint count.
 - Concurrent scan caps enforced.
 - Scanner includes SSRF checks for localhost/private networks and DNS resolution safety.
+
+## Notes for Local Development
+
+- Backend auto-initializes tables at startup (`initTables`) and logs ownership/permission issues when DB grants are insufficient.
+- Frontend automatically redirects to `/login` on `401` responses.
+- Scanner returns structured findings to backend; backend persists and exposes aggregate severity statistics for the UI.
