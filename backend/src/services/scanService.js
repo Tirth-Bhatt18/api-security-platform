@@ -44,6 +44,9 @@ async function sendScanToPython(scanId, requests, userId) {
     return response.data;
   } catch (err) {
     console.error(`Error sending scan ${scanId} to Python scanner:`, err.message);
+    if (err.response?.data) {
+      console.error(`Python scanner response for scan ${scanId}:`, err.response.data);
+    }
 
     // Update scan status to failed
     await scansRepo.updateScanStatus(scanId, 'failed');

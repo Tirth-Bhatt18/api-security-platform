@@ -100,6 +100,12 @@ function normalizeRequest(request, variables = {}) {
   // Resolve variables
   url = resolveVariables(url, variables);
 
+  // OpenAPI/Postman conversions may emit protocol-relative URLs like //example.com/path.
+  // Default to HTTPS so downstream scanner receives a valid absolute URL.
+  if (url.startsWith('//')) {
+    url = `https:${url}`;
+  }
+
   // Extract headers
   const headers = extractHeaders(req.header);
 

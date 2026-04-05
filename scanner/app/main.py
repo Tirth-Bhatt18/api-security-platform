@@ -33,7 +33,8 @@ class NormalizedRequest(BaseModel):
     method: str
     url: str
     headers: Dict[str, str] = {}
-    body: Optional[Dict[str, Any]] = None
+    # Postman payloads can be object, array, string, number, bool, or null.
+    body: Optional[Any] = None
     name: Optional[str] = None
 
 
