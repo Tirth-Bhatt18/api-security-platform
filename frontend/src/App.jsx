@@ -13,7 +13,7 @@ function App() {
 
   return (
     <div className="app-shell">
-      {token ? <Navbar /> : null}
+      <Navbar />
       <main className={token ? 'page with-nav' : 'page'}>
         <Routes>
           <Route path="/login" element={token ? <Navigate to="/dashboard" replace /> : <LoginPage />} />

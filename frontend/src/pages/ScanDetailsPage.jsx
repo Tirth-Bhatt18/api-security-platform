@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import SeverityBadge from '../components/SeverityBadge';
 import SeverityChart from '../components/SeverityChart';
+import BackButton from '../components/BackButton';
 import { getScanDetails } from '../services/api';
 
 function ScanDetailsPage() {
@@ -50,6 +51,10 @@ function ScanDetailsPage() {
 
   return (
     <section className="stack-lg">
+      <div className="row-left">
+        <BackButton fallbackTo="/dashboard" label="Back" />
+      </div>
+
       <div className="hero-panel">
         <div>
           <p className="eyebrow">Scan Details</p>
@@ -96,10 +101,24 @@ function ScanDetailsPage() {
 
               {isExpanded ? (
                 <div className="finding-body">
+                  <h4>Explanation</h4>
+                  <p>{result.explanation || 'No explanation provided.'}</p>
+
+                  <h4>Recommended Fix</h4>
+                  <p>{result.recommended_fix || 'No recommended fix provided.'}</p>
+
                   <h4>Evidence</h4>
-                  <p>{result.evidence || 'No evidence provided'}</p>
-                  <h4>Details</h4>
-                  <pre>{JSON.stringify(result.details || {}, null, 2)}</pre>
+                  <p>{result.evidence || 'No evidence provided.'}</p>
+
+                  <div className="detail-metrics">
+                    <span>Category: {(result.category || 'general').replace(/_/g, ' ')}</span>
+                    <span>Confidence: {Math.round(Number(result.confidence || 0) * 100)}%</span>
+                  </div>
+
+                  <details className="raw-details">
+                    <summary>View raw details</summary>
+                    <pre>{JSON.stringify(result.details || {}, null, 2)}</pre>
+                  </details>
                 </div>
               ) : null}
             </article>
