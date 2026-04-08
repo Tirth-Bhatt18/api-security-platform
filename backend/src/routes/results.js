@@ -5,6 +5,32 @@ const authMiddleware = require('../middleware/auth');
 
 const router = express.Router();
 
+function sanitizeDetails(details) {
+  if (!details || typeof details !== 'object') return {};
+
+  const cloned = { ...details };
+  delete cloned.ai;
+  delete cloned.source;
+  delete cloned.provider;
+  delete cloned.model;
+  delete cloned.error;
+
+  return cloned;
+}
+
+function shapeResultForClient(result) {
+  const details = sanitizeDetails(result.details || {});
+
+  return {
+    ...result,
+    details,
+    explanation: details.explanation || result.evidence || 'No explanation available.',
+    recommended_fix: details.recommended_fix || 'No recommended fix available.',
+    confidence: Number(details.confidence || 0),
+    category: details.category || 'general',
+  };
+}
+
 /**
  * Get results for a specific scan
  * GET /results?scanId=1
@@ -25,7 +51,8 @@ router.get('/', authMiddleware, async (req, res) => {
     }
 
     // Get results
-    const results = await resultsRepo.getResultsByScan(scanId);
+    const rawResults = await resultsRepo.getResultsByScan(scanId);
+    const results = rawResults.map(shapeResultForClient);
 
     // Aggregate statistics
     const stats = await resultsRepo.getResultStatsByScan(scanId);
@@ -64,7 +91,7 @@ router.get('/:resultId', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Result not found' });
     }
 
-    res.json({ result });
+    res.json({ result: shapeResultForClient(result) });
   } catch (err) {
     console.error('Get result error:', err);
     res.status(500).json({ error: 'Failed to retrieve result' });

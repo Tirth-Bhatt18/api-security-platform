@@ -5,6 +5,19 @@ const { enrichFindings } = require('./aiRiskService');
 
 const PYTHON_SCANNER_URL = process.env.PYTHON_SCANNER_URL || 'http://localhost:8000';
 
+function buildRateLimitProfile() {
+  const enabled = String(process.env.RATE_LIMIT_TEST_ENABLED || 'true').toLowerCase() === 'true';
+  const windows = String(process.env.RATE_LIMIT_BURST_WINDOWS || '6,10,14')
+    .split(',')
+    .map((part) => Number(part.trim()))
+    .filter((value) => Number.isInteger(value) && value > 1);
+
+  return {
+    enabled,
+    burst_windows: windows.length ? windows : [12],
+  };
+}
+
 /**
  * Send scan job to Python scanning engine
  */
@@ -18,6 +31,7 @@ async function sendScanToPython(scanId, requests, userId) {
       user_id: userId,
       requests,
       request_count: requests.length,
+      rate_limit_profile: buildRateLimitProfile(),
     };
 
     console.log(`Sending scan ${scanId} to Python scanner at ${PYTHON_SCANNER_URL}`);

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { uploadScan } from '../services/api';
+import BackButton from '../components/BackButton';
 
 function UploadScanPage() {
   const [file, setFile] = useState(null);
@@ -44,6 +45,10 @@ function UploadScanPage() {
 
   return (
     <section className="stack-lg">
+      <div className="row-left">
+        <BackButton fallbackTo="/dashboard" label="Back" />
+      </div>
+
       <div className="hero-panel">
         <div>
           <p className="eyebrow">Start Scan</p>

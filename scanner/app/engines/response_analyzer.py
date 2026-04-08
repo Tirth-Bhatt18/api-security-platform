@@ -128,33 +128,81 @@ class ResponseAnalyzer:
         endpoint: str,
         method: str,
         baseline: Dict[str, Any],
-        burst_responses: List[Dict[str, Any]],
-        burst_count: int
+        window_results: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Analyze burst traffic behavior for explicit throttling/rate-limit weaknesses."""
-        if not burst_responses:
+        """Analyze escalating burst windows for explicit throttling/rate-limit weaknesses."""
+        if not window_results:
             return None
 
-        statuses = [resp.get('status_code', 0) for resp in burst_responses]
-        success_count = sum(1 for code in statuses if 200 <= code < 300)
-        throttled_count = sum(1 for code in statuses if code in (429, 503))
-        error_count = sum(1 for code in statuses if code >= 500)
+        analyzed_windows = []
+        saw_retry_after = False
+        for window in sorted(window_results, key=lambda item: item.get('burst_count', 0)):
+            burst_count = int(window.get('burst_count', 0))
+            responses = window.get('responses', [])
+            if burst_count <= 0 or not responses:
+                continue
 
-        if burst_count >= 10 and throttled_count == 0 and success_count >= int(burst_count * 0.9):
+            statuses = [resp.get('status_code', 0) for resp in responses]
+            success_count = sum(1 for code in statuses if 200 <= code < 300)
+            throttled_count = sum(1 for code in statuses if code in (429, 503))
+            error_count = sum(1 for code in statuses if code >= 500)
+            retry_after_count = 0
+            avg_time = 0.0
+            timings = [float(resp.get('time', 0) or 0) for resp in responses]
+
+            if timings:
+                avg_time = sum(timings) / len(timings)
+
+            for resp in responses:
+                headers = resp.get('headers') or {}
+                if any(str(key).lower() == 'retry-after' for key in headers.keys()):
+                    retry_after_count += 1
+
+            if retry_after_count > 0:
+                saw_retry_after = True
+
+            analyzed_windows.append({
+                'burst_count': burst_count,
+                'success_count': success_count,
+                'throttled_count': throttled_count,
+                'error_count': error_count,
+                'retry_after_count': retry_after_count,
+                'success_ratio': round(success_count / max(1, burst_count), 3),
+                'avg_time': round(avg_time, 3),
+                'status_distribution': statuses,
+            })
+
+        if len(analyzed_windows) < 2:
+            return None
+
+        qualifying_windows = [
+            window for window in analyzed_windows
+            if window['burst_count'] >= 8
+        ]
+        if len(qualifying_windows) < 2:
+            return None
+
+        last_window = qualifying_windows[-1]
+        escalation_clean = all(
+            window['throttled_count'] == 0 and window['success_ratio'] >= 0.85
+            for window in qualifying_windows
+        )
+        stable_under_growth = last_window['success_ratio'] >= 0.9
+
+        if escalation_clean and stable_under_growth and not saw_retry_after:
             return {
                 'endpoint': endpoint,
                 'method': method,
                 'vulnerability': 'Potential Missing Rate Limiting',
-                'severity': 'medium',
+                'severity': 'low',
                 'details': {
-                    'mutation_type': 'rate_limit_burst',
-                    'burst_count': burst_count,
-                    'success_count': success_count,
-                    'throttled_count': throttled_count,
-                    'error_count': error_count,
-                    'status_distribution': statuses,
+                    'mutation_type': 'rate_limit_multi_window_burst',
+                    'category': 'throttling',
+                    'confidence': 0.45,
+                    'windows': qualifying_windows,
+                    'baseline_time': round(float(baseline.get('time', 0) or 0), 3),
                 },
-                'evidence': f'Burst of {burst_count} requests did not trigger throttling (no 429/503 observed).',
+                'evidence': f'Escalating burst windows ({qualifying_windows[0]["burst_count"]}..{last_window["burst_count"]}) completed with no 429/503 or Retry-After signals.',
             }
 
         return None
